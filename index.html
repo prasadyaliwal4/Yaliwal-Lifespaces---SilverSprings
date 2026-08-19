@@ -957,21 +957,6 @@
     }));
   }
 
-  // Groups plots into their real-world "blocks" (the road-bounded column
-  // groups from the hoarding) so we can give each block one rounded
-  // outline, while individual plots inside keep straight edges.
-  const BLOCK_RANGES = [
-    { name:'A', from:2, to:14 }, { name:'B', from:15, to:40 }, { name:'C', from:41, to:66 },
-    { name:'D', from:67, to:80 }, { name:'E', from:81, to:112 }, { name:'F', from:113, to:144 },
-    { name:'G', from:145, to:176 }, { name:'H', from:177, to:208 }, { name:'I', from:209, to:240 },
-    { name:'J', from:241, to:264 }, { name:'K', from:265, to:271 }, { name:'L', from:272, to:277 }
-  ];
-  function blockNameFor(id){
-    const n = Number(id);
-    const range = BLOCK_RANGES.find(b => n >= b.from && n <= b.to);
-    return range ? range.name : null;
-  }
-
   function render(){
     const svg = document.getElementById('siteplan');
     svg.innerHTML = '';
@@ -981,8 +966,6 @@
     const searchTerm = document.getElementById('searchInput').value.trim().toLowerCase();
     const counts = {available:0, booked:0, sold:0, hold:0, unknown:0};
 
-    // Build each plot's render data first, grouped by block
-    const blocks = {};
     LAYOUT_PLOTS.forEach(p => {
       const data = currentData[p.id] || { plotNo: p.id, status: p.amenity ? 'amenity' : 'unknown', block: p.block, size:'', facing:'', price:'', notes:'' };
       if (!p.amenity) counts[data.status] = (counts[data.status] || 0) + 1;
@@ -991,63 +974,30 @@
       const matchesFilter = p.amenity || activeFilter === 'all' || data.status === activeFilter;
       const matchesSearch = !searchTerm || p.id.toLowerCase().includes(searchTerm);
       const isDimmed = !matchesFilter || !matchesSearch;
+      const dimClass = 'plot' + (isDimmed ? ' dimmed' : '') + (selectedId === p.id ? ' selected' : '');
+      // Dimmed plots stay fully opaque (a neutral gray) rather than
+      // transparent — a transparent overlay lets the original printed
+      // number on the photo show through underneath our own label,
+      // producing a doubled/ghosted number.
+      const fillColor = isDimmed ? '#DADCE0' : `var(--${data.status})`;
+      const lineColor = isDimmed ? 'var(--dimmed-line)' : `var(--${data.status}-line)`;
+      const style = { fill: fillColor, 'fill-opacity': 1, stroke: lineColor, 'stroke-width': 1.5 };
 
-      const blockName = blockNameFor(p.id) || `solo-${p.id}`;
-      (blocks[blockName] = blocks[blockName] || []).push({ p, data, isDimmed });
-    });
+      let shape, labelX, labelY;
+      if (p.poly){
+        shape = el('polygon', { class: dimClass, points: p.poly.map(pt => pt.join(',')).join(' '), 'stroke-linejoin':'round', ...style });
+        labelX = p.poly.reduce((s,pt)=>s+pt[0],0)/p.poly.length;
+        labelY = p.poly.reduce((s,pt)=>s+pt[1],0)/p.poly.length;
+      } else {
+        shape = el('rect', { class: dimClass, x: p.x, y: p.y, width: p.w, height: p.h, rx: 0, ...style });
+        labelX = p.x + p.w/2; labelY = p.y + p.h/2;
+      }
+      shape.addEventListener('click', () => selectPlot(p.id, data));
+      svg.appendChild(shape);
 
-    const defs = el('defs', {});
-    svg.appendChild(defs);
-    let clipCounter = 0;
-
-    Object.entries(blocks).forEach(([blockName, members]) => {
-      // Bounding box of every plot in this block (polygons use their own points)
-      let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
-      members.forEach(({p}) => {
-        if (p.poly){
-          p.poly.forEach(([x,y]) => { minX=Math.min(minX,x); minY=Math.min(minY,y); maxX=Math.max(maxX,x); maxY=Math.max(maxY,y); });
-        } else {
-          minX=Math.min(minX,p.x); minY=Math.min(minY,p.y);
-          maxX=Math.max(maxX,p.x+p.w); maxY=Math.max(maxY,p.y+p.h);
-        }
-      });
-      const pad = 1.5, radius = 9;
-      const bx = minX-pad, by = minY-pad, bw = (maxX-minX)+pad*2, bh = (maxY-minY)+pad*2;
-
-      const clipId = `blockClip${clipCounter++}`;
-      const clipPath = el('clipPath', { id: clipId });
-      clipPath.appendChild(el('rect', { x:bx, y:by, width:bw, height:bh, rx:radius }));
-      defs.appendChild(clipPath);
-
-      const group = el('g', { 'clip-path': `url(#${clipId})` });
-      svg.appendChild(group);
-
-      members.forEach(({p, data, isDimmed}) => {
-        const dimClass = 'plot' + (isDimmed ? ' dimmed' : '') + (selectedId === p.id ? ' selected' : '');
-        // Dimmed plots stay fully opaque (a neutral gray) rather than
-        // transparent — a transparent overlay lets the original printed
-        // number on the photo show through underneath our own label,
-        // producing a doubled/ghosted number.
-        const fillColor = isDimmed ? '#DADCE0' : `var(--${data.status})`;
-        const lineColor = isDimmed ? 'var(--dimmed-line)' : `var(--${data.status}-line)`;
-        const style = { fill: fillColor, 'fill-opacity': 1, stroke: lineColor, 'stroke-width': 1.5 };
-
-        let shape, labelX, labelY;
-        if (p.poly){
-          shape = el('polygon', { class: dimClass, points: p.poly.map(pt => pt.join(',')).join(' '), 'stroke-linejoin':'round', ...style });
-          labelX = p.poly.reduce((s,pt)=>s+pt[0],0)/p.poly.length;
-          labelY = p.poly.reduce((s,pt)=>s+pt[1],0)/p.poly.length;
-        } else {
-          shape = el('rect', { class: dimClass, x: p.x, y: p.y, width: p.w, height: p.h, rx: 0, ...style });
-          labelX = p.x + p.w/2; labelY = p.y + p.h/2;
-        }
-        shape.addEventListener('click', () => selectPlot(p.id, data));
-        group.appendChild(shape);
-
-        const labelAttrs = { class:'plot-label', x: labelX, y: labelY + 3, 'text-anchor':'middle' };
-        if (isDimmed) labelAttrs.fill = '#9AA0A6';
-        group.appendChild(el('text', labelAttrs, p.id));
-      });
+      const labelAttrs = { class:'plot-label', x: labelX, y: labelY + 3, 'text-anchor':'middle' };
+      if (isDimmed) labelAttrs.fill = '#9AA0A6';
+      svg.appendChild(el('text', labelAttrs, p.id));
     });
 
     renderLegend(counts);
